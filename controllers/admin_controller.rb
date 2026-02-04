@@ -166,79 +166,12 @@ class AdminController < ApplicationController
         error 500, "model_name parameter not set" if params["model_name"].blank?
 
         model = Goo.model_by_name(params["model_name"].to_sym)
-        error 500, "#{params["model_name"]} is not indexable" if model.nil? || !model.index_enabled?
+        error 500, "#{params['model_name']} is not an indexable model. Only 'ontology', 'ontology_submission', and 'Agent' models can be indexed." if model.nil? || !model.index_enabled?
 
-        all_attrs = get_attributes_to_include([:all], model)
-
-        collections = model.where.include(all_attrs).all
-        indexed = []
-        not_indexed = []
-        collections.each do |m|
-          begin
-            response = m.index.dig("responseHeader", "status")
-            if response.eql?(0)
-              indexed << m.id
-            else
-              not_indexed << m.id
-            end
-          rescue StandardError
-            not_indexed << m.id
-          end
-        end
-
-        if !indexed.empty?
-          msg = "Batch indexing for #{model.model_name} completed for"
-
-          if not_indexed.empty?
-            msg +=  " all models"
-          else
-            msg +=  " #{indexed.join(', ')} and not for the following #{not_indexed.join(', ')}, see logs for more details"
-          end
-          reply(200, msg)
-        else
-          reply(500, "Batch indexing for #{model.model_name} failed")
-        end
+        LinkedData::Jobs::BatchIndexJob.perform_async(params["model_name"])
+        
+        reply(200, "Batch indexing job for #{params["model_name"]} started")
       end
-    end
-    private
-
-    def process_long_operation(timeout, args)
-      process_id = "#{Time.now.to_i}_#{args[:name]}"
-      redis.setex process_id, timeout, MultiJson.dump("processing")
-      proc = Proc.new {
-        error = {}
-        begin
-          yield(args)
-        rescue Exception => e
-          msg = "Error #{args[:message]} - #{e.class}: #{e.message}"
-          puts "#{msg}\n#{e.backtrace.join("\n\t")}"
-          error[:errors] = [msg]
-        end
-        redis.setex process_id, timeout, MultiJson.dump(error.empty? ? "done" : error)
-      }
-
-      fork = true # set to false for testing
-      if fork
-        pid = Process.fork do
-          proc.call
-        end
-        Process.detach(pid)
-      else
-        proc.call
-      end
-      process_id
-    end
-
-    def redis
-      Redis.new(host: Annotator.settings.annotator_redis_host, port: Annotator.settings.annotator_redis_port, timeout: 30)
-    end
-
-    def redis_goo
-      Redis.new(host: LinkedData.settings.goo_redis_host, port: LinkedData.settings.goo_redis_port, timeout: 30)
-    end
-
-    def redis_http
-      Redis.new(host: LinkedData.settings.http_redis_host, port: LinkedData.settings.http_redis_port, timeout: 30)
     end
 
   end
